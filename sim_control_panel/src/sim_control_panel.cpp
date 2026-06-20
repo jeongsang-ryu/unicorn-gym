@@ -63,6 +63,23 @@ SimControlPanel::SimControlPanel(QWidget * parent)
   lidar_row->addWidget(opp_lidar_btn_);
   layout->addLayout(lidar_row);
 
+  auto * line_vp = new QFrame;
+  line_vp->setFrameShape(QFrame::HLine);
+  line_vp->setFrameShadow(QFrame::Sunken);
+  layout->addWidget(line_vp);
+
+  layout->addWidget(new QLabel("Virtual perception inject (pick one):"));
+  auto * vp_row = new QHBoxLayout;
+  scan_overlay_btn_ = new QPushButton("LiDAR Overlay");
+  tracking_merge_btn_ = new QPushButton("Tracking Merge");
+  scan_overlay_btn_->setCheckable(true);
+  tracking_merge_btn_->setCheckable(true);
+  scan_overlay_btn_->setChecked(true);    // default seam = overlay (matches node default)
+  tracking_merge_btn_->setChecked(false);
+  vp_row->addWidget(scan_overlay_btn_);
+  vp_row->addWidget(tracking_merge_btn_);
+  layout->addLayout(vp_row);
+
   auto * line = new QFrame;
   line->setFrameShape(QFrame::HLine);
   line->setFrameShadow(QFrame::Sunken);
@@ -94,6 +111,8 @@ SimControlPanel::SimControlPanel(QWidget * parent)
   connect(ftg_btn, &QPushButton::clicked, this, &SimControlPanel::onModeFtg);
   connect(ego_lidar_btn_, &QPushButton::clicked, this, &SimControlPanel::onToggleEgoLidar);
   connect(opp_lidar_btn_, &QPushButton::clicked, this, &SimControlPanel::onToggleOppLidar);
+  connect(scan_overlay_btn_, &QPushButton::clicked, this, &SimControlPanel::onSelectOverlay);
+  connect(tracking_merge_btn_, &QPushButton::clicked, this, &SimControlPanel::onSelectMerge);
 }
 
 void SimControlPanel::onInitialize()
@@ -105,6 +124,7 @@ void SimControlPanel::onInitialize()
   mode_pub_ = node_->create_publisher<std_msgs::msg::String>("/sim/opp_mode", 10);
   ego_lidar_pub_ = node_->create_publisher<std_msgs::msg::Bool>("/sim/ego_lidar_enable", 10);
   opp_lidar_pub_ = node_->create_publisher<std_msgs::msg::Bool>("/sim/opp_lidar_enable", 10);
+  inject_mode_pub_ = node_->create_publisher<std_msgs::msg::String>("/vp/inject_mode", 10);
 }
 
 void SimControlPanel::onRemoveOpponent()
@@ -185,6 +205,31 @@ void SimControlPanel::onToggleOppLidar()
     m.data = on;
     opp_lidar_pub_->publish(m);
   }
+}
+
+void SimControlPanel::onSelectOverlay()
+{
+  // mutually exclusive: choosing the overlay seam deselects merge
+  scan_overlay_btn_->setChecked(true);
+  tracking_merge_btn_->setChecked(false);
+  if (inject_mode_pub_) {
+    std_msgs::msg::String m;
+    m.data = "overlay";
+    inject_mode_pub_->publish(m);
+  }
+  if (status_label_) {status_label_->setText("VP inject: LiDAR overlay");}
+}
+
+void SimControlPanel::onSelectMerge()
+{
+  scan_overlay_btn_->setChecked(false);
+  tracking_merge_btn_->setChecked(true);
+  if (inject_mode_pub_) {
+    std_msgs::msg::String m;
+    m.data = "merge";
+    inject_mode_pub_->publish(m);
+  }
+  if (status_label_) {status_label_->setText("VP inject: tracking merge");}
 }
 
 }  // namespace sim_control_panel

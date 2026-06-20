@@ -38,6 +38,8 @@ private Q_SLOTS:
   void onModeFtg();
   void onToggleEgoLidar();
   void onToggleOppLidar();
+  void onSelectOverlay();
+  void onSelectMerge();
 
 private:
   void publishSpeedDelta(float delta);
@@ -50,8 +52,12 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr mode_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr ego_lidar_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr opp_lidar_pub_;
+  // virtual_perception injection seam selector (overlay XOR merge)
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr inject_mode_pub_;
   QPushButton * ego_lidar_btn_ {nullptr};
   QPushButton * opp_lidar_btn_ {nullptr};
+  QPushButton * scan_overlay_btn_ {nullptr};
+  QPushButton * tracking_merge_btn_ {nullptr};
 
   QLabel * status_label_ {nullptr};
   double speed_step_ {0.5};

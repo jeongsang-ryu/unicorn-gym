@@ -745,7 +745,15 @@ class GymBridge(Node):
     def scan_timer_callback(self):
         # ---- lidar scans (runs at scan_hz, decoupled from physics) ----
         self._update_scans()
-        stamp = self.get_clock().now().to_msg()
+        # Stamp the scan with the timestamp of the physics step it was raycast
+        # from (self.ts), NOT a fresh now(). _update_scans() reads self.obs, which
+        # is the pose produced by the last drive_timer step at self.ts; the
+        # map->base_link TF for that pose was published with that SAME self.ts.
+        # Using a fresh now() here makes scan.stamp drift ahead of the TF by the
+        # inter-timer scheduling jitter, so RViz does a time-mismatched TF lookup
+        # and the scan visibly slides in the map frame while moving. Aligning the
+        # stamps makes the projection exact. (opponent_vehicle already does this.)
+        stamp = self.ts
         if self.ego_lidar_on:
             scan = LaserScan()
             scan.header.stamp = stamp
