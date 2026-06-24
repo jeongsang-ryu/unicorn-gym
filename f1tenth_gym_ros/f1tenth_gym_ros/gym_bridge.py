@@ -85,8 +85,6 @@ class GymBridge(Node):
             type=ParameterType.PARAMETER_STRING))
         self.set_descriptor(name='ego_odom_topic', descriptor=ParameterDescriptor(
             type=ParameterType.PARAMETER_STRING))
-        self.set_descriptor(name='ego_pose_topic', descriptor=ParameterDescriptor(
-            type=ParameterType.PARAMETER_STRING))
         self.set_descriptor(name='ego_opp_odom_topic', descriptor=ParameterDescriptor(
             type=ParameterType.PARAMETER_STRING))
         self.set_descriptor(name='ego_scan_topic', descriptor=ParameterDescriptor(
@@ -202,8 +200,6 @@ class GymBridge(Node):
         self.ego_namespace = self.get_parameter('ego_namespace').value
         ego_odom_topic = self.ego_namespace + '/' + \
             self.get_parameter('ego_odom_topic').value
-        ego_pose_topic = self.ego_namespace + '/' + \
-            self.get_parameter('ego_pose_topic').value
         self.scan_distance_to_base_link = self.get_parameter(
             'scan_distance_to_base_link').value
         self.ts = self.get_clock().now().to_msg()
@@ -280,7 +276,6 @@ class GymBridge(Node):
             LaserScan, ego_scan_topic, 10)
         self.ego_odom_pub = self.create_publisher(Odometry, ego_odom_topic, 10)
         self.fake_vesc_odom_pub = self.create_publisher(Odometry, '/vesc/odom', 10)
-        self.ego_pose_pub = self.create_publisher(PoseStamped, ego_pose_topic, 10)
         self.ego_drive_published = False
         self.opp_drive_published = False
         # opponent publishers exist only when gym owns the opponent (internal mode)
@@ -875,12 +870,6 @@ class GymBridge(Node):
         ego_odom.twist.twist.angular.z = self.ego_speed[2]
         self.ego_odom_pub.publish(ego_odom)
         self.fake_vesc_odom_pub.publish(ego_odom)
-
-        # publish pose
-        pose_msg = PoseStamped()
-        pose_msg.header = ego_odom.header
-        pose_msg.pose = ego_odom.pose.pose
-        self.ego_pose_pub.publish(pose_msg)
 
         if self.has_opp:
             opp_odom = Odometry()
