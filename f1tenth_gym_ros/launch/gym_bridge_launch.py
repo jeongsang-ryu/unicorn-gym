@@ -46,6 +46,13 @@ def generate_launch_description():
         'publish_tf', default_value='true',
         description="Whether gym_bridge publishes map->base_link TF. True only for gt localization mode.")
 
+    ego_scan_out = LaunchConfiguration('ego_scan_out')
+    ego_scan_out_arg = DeclareLaunchArgument(
+        'ego_scan_out', default_value='/scan_raw',
+        description="Topic the ego scan is published on: /scan_raw when virtual_perception "
+                    "overlays it onto /scan (default), or /scan to publish straight through "
+                    "when virtual injection is off.")
+
     sim_setup_params = os.path.join(
         get_package_share_directory('stack_master'),
         'config',
@@ -66,9 +73,9 @@ def generate_launch_description():
                     {'publish_tf': publish_tf},
                     # ego-only: the `opponent` package owns the opponent (same as on the real car)
                     {'use_external_opponent': True}],
-        # ego scan goes to /scan_raw; scan_augmentor overlays the opponent -> /scan
+        # ego scan goes to ego_scan_out (/scan_raw when scan_overlay owns /scan, else /scan)
         remappings=[('/initialpose', '/sim/initialpose'),
-                    ('/scan', '/scan_raw')]
+                    ('/scan', ego_scan_out)]
     )
     rviz_node = Node(
         package='rviz2',
@@ -104,6 +111,7 @@ def generate_launch_description():
     ld.add_action(map_yaml_path_arg)
     ld.add_action(ego_odom_topic_arg)
     ld.add_action(publish_tf_arg)
+    ld.add_action(ego_scan_out_arg)
     ld.add_action(rviz_node)
     ld.add_action(bridge_node)
     ld.add_action(ego_robot_publisher)
