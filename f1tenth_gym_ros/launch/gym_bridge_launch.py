@@ -61,7 +61,7 @@ def generate_launch_description():
         name='bridge',
         parameters=[sim_setup_params,
                     {'map_path': map_yaml_path},
-                    {'sim_params': os.path.join(get_package_share_directory('stack_master'), 'config', 'SIM', 'sim_params.yaml')},
+                    {'dynamics': os.path.join(get_package_share_directory('stack_master'), 'config', 'SIM', 'dynamics.yaml')},
                     {'ego_odom_topic': ego_odom_topic},
                     {'publish_tf': publish_tf},
                     # ego-only: the `opponent` package owns the opponent (same as on the real car)
@@ -75,7 +75,7 @@ def generate_launch_description():
         executable='rviz2',
         name='rviz',
         arguments=[
-            '-d', os.path.join(get_package_share_directory('stack_master'), 'config', 'SIM', 'sim.rviz')],
+            '-d', os.path.join(get_package_share_directory('stack_master'), 'config', 'SIM', 'pitwall.rviz')],
         remappings=[('/initialpose', '/sim/initialpose')]
     )
 

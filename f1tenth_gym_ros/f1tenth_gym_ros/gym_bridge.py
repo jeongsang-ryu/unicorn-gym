@@ -26,7 +26,7 @@ from rclpy.node import Node
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.parameter import ParameterType
 from rclpy.executors import MultiThreadedExecutor
-from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallbackGroup
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 
 from sensor_msgs.msg import LaserScan
@@ -46,6 +46,8 @@ from tf2_ros import TransformBroadcaster
 # Installs a numba shim and swaps ScanSimulator2D -> range_libc RayMarching.
 # MUST run before gym.make('f110_gym:...').
 from f1tenth_gym_ros import numba_free  # noqa: F401
+
+import pitwall  # one-line telemetry: pitwall.event(...) -> /pitwall/events
 
 import gymnasium as gym
 import numpy as np
@@ -71,6 +73,13 @@ class GymBridge(Node):
     def __init__(self):
         super().__init__('gym_bridge',
                          automatically_declare_parameters_from_overrides=True)
+
+        # Bind pitwall telemetry to this node (reuses its DDS participant).
+        pitwall.init(self)
+        # rising-edge latches so each collision is reported once, not every tick.
+        self._wall_hit_latch = False
+        self._opp_hit_latch = False
+        self._opp_collision_now = False
 
         self.set_descriptor(name='ego_namespace', descriptor=ParameterDescriptor(
             type=ParameterType.PARAMETER_STRING))
@@ -110,8 +119,8 @@ class GymBridge(Node):
         self.set_descriptor(name='num_agent', descriptor=ParameterDescriptor(
             type=ParameterType.PARAMETER_INTEGER))
 
-        self.set_descriptor(name='sim_params', descriptor=ParameterDescriptor(
-            type=ParameterType.PARAMETER_STRING, description="The path to the sim_params yaml file"))
+        self.set_descriptor(name='dynamics', descriptor=ParameterDescriptor(
+            type=ParameterType.PARAMETER_STRING, description="The path to the vehicle dynamics yaml file"))
 
         self.set_descriptor(name='sx', descriptor=ParameterDescriptor(
             type=ParameterType.PARAMETER_DOUBLE, description="Starting X position of ego"))
@@ -137,8 +146,8 @@ class GymBridge(Node):
         elif type(num_agents) != int:
             raise ValueError('num_agents should be an int.')
 
-        # get sim params
-        sim_params_yaml = self.get_parameter('sim_params').value
+        # get vehicle dynamics params
+        sim_params_yaml = self.get_parameter('dynamics').value
         sim_param_data = yaml.safe_load(open(sim_params_yaml, 'r'))
         sim_params = {key: float(value)
                       for key, value in sim_param_data.items()}
@@ -151,7 +160,9 @@ class GymBridge(Node):
 
         # env backend
         map_yaml_path = os.path.abspath(self.get_parameter('map_path').value)
-        # Decoupled rates: physics/dynamics step vs lidar scan.
+        # Physics/dynamics step and lidar scan are phase-locked: the scan is
+        # decimated from the physics step (every scan_decim steps), so scan_hz must
+        # be an integer divisor of sim_step_hz. See the single-timer setup below.
         self.sim_step_hz = float(self._param('sim_step_hz', 80.0))
         self.scan_hz = float(self._param('scan_hz', 40.0))
         # When true, the opponent is owned by the external `opponent` package
@@ -238,13 +249,28 @@ class GymBridge(Node):
         opp_ego_odom_topic = self.opp_namespace + '/' + \
             self.get_parameter('opp_ego_odom_topic').value
 
-        # sim physical step timer
-        cb_group1= ReentrantCallbackGroup()
+        # Single phase-locked timer. Physics steps at sim_step_hz and the lidar
+        # scan is decimated from it (published every scan_decim steps from inside
+        # the SAME callback), so the scan is raycast from -- and stamped with --
+        # the exact physics step whose map->base_link TF was just published.
+        # Previously a separate scan_timer running on the MultiThreadedExecutor +
+        # a shared ReentrantCallbackGroup let the scan read self.obs/self.ts while
+        # the drive step was mid-write, so scan geometry and TF could come from
+        # different steps -> the scan slid against the map while moving.
+        # sim_step_hz must be an integer multiple of scan_hz; round + warn if not.
+        self.scan_decim = max(1, int(round(self.sim_step_hz / self.scan_hz)))
+        eff_scan_hz = self.sim_step_hz / self.scan_decim
+        if abs(eff_scan_hz - self.scan_hz) > 1e-6:
+            self.get_logger().warn(
+                f'[GymBridge] scan_hz {self.scan_hz} is not an integer divisor of '
+                f'sim_step_hz {self.sim_step_hz}; using {eff_scan_hz:.3f} Hz '
+                f'(scan every {self.scan_decim} physics steps) to stay phase-locked.')
+        self.scan_hz = eff_scan_hz
+        self._scan_tick = 0
+        # MutuallyExclusive so the physics+scan step never overlaps itself.
+        cb_group1 = MutuallyExclusiveCallbackGroup()
         self.drive_timer = self.create_timer(
             1.0 / self.sim_step_hz, self.drive_timer_callback, callback_group=cb_group1)
-        # lidar scan timer (decoupled, slower than physics)
-        self.scan_timer = self.create_timer(
-            1.0 / self.scan_hz, self.scan_timer_callback, callback_group=cb_group1)
 
         # transform broadcaster
         self.br = TransformBroadcaster(self)
@@ -695,20 +721,30 @@ class GymBridge(Node):
         self.ts = self.get_clock().now().to_msg()
         self._update_state()
         self._check_collision()
+        self._report_collisions()
         # odom + tf track the physics rate
         self._publish_odom(self.ts)
         self._publish_transforms(self.ts)
         self._publish_wheel_transforms(self.ts)
+        # lidar phase-locked to the physics step: every scan_decim steps publish a
+        # scan raycast from THIS step's obs and stamped with THIS step's self.ts,
+        # so the scan and its TF are always coherent (no inter-timer drift/race).
+        self._scan_tick += 1
+        if self._scan_tick >= self.scan_decim:
+            self._scan_tick = 0
+            self._publish_scans(self.ts)
 
     def _check_collision(self):
         """Geometric ego-vs-virtual-obstacle collision (opponent + static).
         Overlay obstacles aren't in the gym physics, so stop the ego here."""
         ex, ey = self.obs['poses_x'][0], self.obs['poses_y'][0]
-        hit = False
-        for x, y, half in (self._dyn_obs + self._stat_obs):
-            if math.hypot(ex - x, ey - y) < self.ego_half + half:
-                hit = True
-                break
+        # Split opponent (dynamic) vs static so telemetry can distinguish them.
+        opp_hit = any(math.hypot(ex - x, ey - y) < self.ego_half + half
+                      for x, y, half in self._dyn_obs)
+        stat_hit = any(math.hypot(ex - x, ey - y) < self.ego_half + half
+                       for x, y, half in self._stat_obs)
+        self._opp_collision_now = opp_hit
+        hit = opp_hit or stat_hit
         if hit:
             self.env.unwrapped.sim.agents[0].state[3] = 0.0   # zero ego speed now
             self.ego_requested_speed = 0.0
@@ -726,6 +762,20 @@ class GymBridge(Node):
             self._collision_ticks = 0
         self.ego_collision = hit
 
+    def _report_collisions(self):
+        """Emit one pitwall telemetry event per collision onset (rising edge).
+        Wall = gym's per-agent collision flag (ego footprint vs map walls);
+        opponent = ego footprint vs the opponent virtual obstacle (overlay arch)."""
+        wall_hit = bool(self.obs['collisions'][0]) if 'collisions' in self.obs else False
+        if wall_hit and not self._wall_hit_latch:
+            pitwall.event('ego: WALL collision')
+        self._wall_hit_latch = wall_hit
+
+        opp_hit = self._opp_collision_now
+        if opp_hit and not self._opp_hit_latch:
+            pitwall.event('ego: OPPONENT collision')
+        self._opp_hit_latch = opp_hit
+
     def _raceline_callback(self, msg: WpntArray):
         if len(msg.wpnts) >= 3:
             self._raceline = np.array([[w.x_m, w.y_m, w.psi_rad] for w in msg.wpnts])
@@ -742,18 +792,15 @@ class GymBridge(Node):
         self.get_logger().warn(
             f'[GymBridge] crash recovery -> respawn on raceline at ({rx:.1f}, {ry:.1f})')
 
-    def scan_timer_callback(self):
-        # ---- lidar scans (runs at scan_hz, decoupled from physics) ----
+    def _publish_scans(self, stamp):
+        # ---- lidar scans (phase-locked: called from drive_timer_callback every
+        # scan_decim physics steps, running in that same callback) ----
         self._update_scans()
-        # Stamp the scan with the timestamp of the physics step it was raycast
-        # from (self.ts), NOT a fresh now(). _update_scans() reads self.obs, which
-        # is the pose produced by the last drive_timer step at self.ts; the
-        # map->base_link TF for that pose was published with that SAME self.ts.
-        # Using a fresh now() here makes scan.stamp drift ahead of the TF by the
-        # inter-timer scheduling jitter, so RViz does a time-mismatched TF lookup
-        # and the scan visibly slides in the map frame while moving. Aligning the
-        # stamps makes the projection exact. (opponent_vehicle already does this.)
-        stamp = self.ts
+        # `stamp` is the self.ts of the physics step we are raycasting from, the
+        # SAME stamp the map->base_link TF for this pose was published with. Since
+        # this runs inside the drive step (one thread, no step can interleave), the
+        # scan geometry and its TF are always coherent, so the scan no longer slides
+        # against the map while moving.
         if self.ego_lidar_on:
             scan = LaserScan()
             scan.header.stamp = stamp

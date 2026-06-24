@@ -10,7 +10,10 @@ scans, an RViz sim control panel).
 
 - `f1tenth_gym/`       — physics core (`f110_gym`), based on f1tenth_gym
 - `f1tenth_gym_ros/`   — ROS 2 bridge, based on f1tenth_gym_ros
-- `sim_control_panel/` — RViz panel: inject / clear obstacles, drive the opponent
+
+> The RViz Sim Control panel (inject / clear obstacles, drive the opponent, plus
+> the state banner + telemetry feed) now lives in the **`pitwall`** package
+> (`race_utils/pitwall`), registered as the `pitwall/SimControlPanel` RViz panel.
 
 ## Raycaster (2D-RayCaster)
 
@@ -31,7 +34,7 @@ pip install --no-build-isolation -e 2D-RayCaster/range_libc/pywrapper
 ## Usage
 
 Built with `colcon` as part of a ROS 2 workspace. `f1tenth_gym` is a pip-editable
-package (`pip install --no-build-isolation -e f1tenth_gym`); `f1tenth_gym_ros` and
-`sim_control_panel` are ament/colcon packages. See the parent
+package (`pip install --no-build-isolation -e f1tenth_gym`); `f1tenth_gym_ros` is
+an ament/colcon package. See the parent
 [unicorn-racing-stack](https://github.com/hmcl-unist/unicorn-racing-stack)
-`INSTALL.md` for the full environment setup.
+`README.md` ("Get started") for the full environment setup.
