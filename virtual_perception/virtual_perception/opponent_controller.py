@@ -161,7 +161,8 @@ class OpponentController(Node):
         self.lookahead = float(self.get_parameter('lookahead').value)
 
         # path-following source: prefer live /global_waypoints (has speed),
-        # else fall back to the map's centerline.csv (constant cruise speed).
+        # else fall back to a file in the map dir: centerline.csv (constant
+        # cruise) or global_waypoints.json (IQP racing line, with speeds).
         self.path_pts = None        # (N, 2) map-frame x,y
         self.path_speeds = None     # (N,) m/s, or None -> use max_speed
         self._load_centerline()
@@ -221,21 +222,50 @@ class OpponentController(Node):
         if not map_path:
             self.get_logger().warn('[OpponentController] no map_path -> path mode needs /global_waypoints')
             return
-        csv_path = os.path.join(os.path.dirname(os.path.abspath(map_path)),
-                                self.get_parameter('centerline_csv').value)
-        if not os.path.exists(csv_path):
-            self.get_logger().warn(f'[OpponentController] centerline not found: {csv_path}')
-            return
-        xs, ys = [], []
-        with open(csv_path, 'r') as f:
-            for row in csv.DictReader(f):
-                xs.append(float(row['x_m']))
-                ys.append(float(row['y_m']))
-        if xs:
-            self.path_pts = np.column_stack([xs, ys])
-            self.path_speeds = None   # centerline has no speed -> cruise at max_speed
-            self.get_logger().info(
-                f'[OpponentController] loaded centerline ({len(xs)} pts) from {csv_path}')
+        map_dir = os.path.dirname(os.path.abspath(map_path))
+
+        # 1) centerline.csv (x_m,y_m; no speed -> cruise at max_speed)
+        csv_path = os.path.join(map_dir, self.get_parameter('centerline_csv').value)
+        if os.path.exists(csv_path):
+            xs, ys = [], []
+            with open(csv_path, 'r') as f:
+                for row in csv.DictReader(f):
+                    xs.append(float(row['x_m']))
+                    ys.append(float(row['y_m']))
+            if xs:
+                self.path_pts = np.column_stack([xs, ys])
+                self.path_speeds = None
+                self.get_logger().info(
+                    f'[OpponentController] loaded centerline ({len(xs)} pts) from {csv_path}')
+                return
+
+        # 2) global_waypoints.json -> the SAME IQP racing line /global_waypoints
+        #    serves (x_m,y_m,vx_mps). Reuse gb_optimizer's canonical reader so the
+        #    JSON parsing lives in one place; lazy import keeps virtual_perception
+        #    usable even where gb_optimizer isn't present.
+        if os.path.exists(os.path.join(map_dir, 'global_waypoints.json')):
+            map_name = os.path.splitext(os.path.basename(map_path))[0]   # f.yaml -> f
+            try:
+                from gb_optimizer.readwrite_global_waypoints import read_global_waypoints
+                # tuple order per read_global_waypoints(): index 5 = global_traj_wpnts_iqp,
+                # the WpntArray that /global_waypoints publishes.
+                (_, _, _, _, _, gtw_iqp, _, _, _) = read_global_waypoints(map_name)
+                wpnts = gtw_iqp.wpnts
+                if wpnts:
+                    self.path_pts = np.array([[w.x_m, w.y_m] for w in wpnts])
+                    spd = np.array([w.vx_mps for w in wpnts])
+                    self.path_speeds = spd if np.any(spd > 0.0) else None
+                    self.get_logger().info(
+                        f'[OpponentController] loaded racing line ({len(wpnts)} pts) from '
+                        f'{map_name}/global_waypoints.json via gb_optimizer reader')
+                    return
+            except Exception as e:
+                self.get_logger().warn(
+                    f'[OpponentController] could not read global_waypoints.json ({e})')
+
+        self.get_logger().warn(
+            f'[OpponentController] no centerline.csv / global_waypoints.json in {map_dir} '
+            '-> path mode needs /global_waypoints')
 
     def _teleop_cb(self, msg):
         self.teleop = msg
