@@ -23,7 +23,7 @@
 from launch import LaunchDescription
 from launch_ros.actions import Node
 from launch.substitutions import Command, LaunchConfiguration
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, TimerAction
 from ament_index_python.packages import get_package_share_directory
 import os
 import yaml
@@ -112,7 +112,11 @@ def generate_launch_description():
     ld.add_action(ego_odom_topic_arg)
     ld.add_action(publish_tf_arg)
     ld.add_action(ego_scan_out_arg)
-    ld.add_action(rviz_node)
+    # Delay RViz so it creates its OpenGL context AFTER the other nodes' startup
+    # burst (gym_bridge raycaster build + ~28 nodes) settles. Starting it in that
+    # burst intermittently corrupts GL init -> a black viewport (renders, ~30 fps,
+    # but shows nothing; data/TF are fine). GPU/OS-agnostic. 1.5s is enough here.
+    ld.add_action(TimerAction(period=1.5, actions=[rviz_node]))
     ld.add_action(bridge_node)
     ld.add_action(ego_robot_publisher)
     # Always run the opponent's robot_state_publisher so a runtime-spawned
