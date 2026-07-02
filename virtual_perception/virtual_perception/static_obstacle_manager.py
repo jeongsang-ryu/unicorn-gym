@@ -7,6 +7,7 @@ f110_msgs/ObstacleArray on /sim/static_obstacles -> consumed by scan_overlay
 """
 import rclpy
 from rclpy.node import Node
+from rclpy.duration import Duration
 from geometry_msgs.msg import PointStamped
 from std_msgs.msg import Empty
 from visualization_msgs.msg import Marker, MarkerArray
@@ -67,6 +68,7 @@ class StaticObstacleManager(Node):
             m.id = i
             m.type = Marker.CUBE
             m.action = Marker.ADD
+            m.lifetime = Duration(seconds=0.3).to_msg()  # auto-expire (~3 ticks @ 10 Hz) so a cleared/moved obstacle vanishes even if the per-id DELETE is dropped
             m.pose.position.x = x
             m.pose.position.y = y
             m.pose.position.z = 0.1
